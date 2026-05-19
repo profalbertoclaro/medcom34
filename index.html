@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#10231f" />
+    <meta
+      name="description"
+      content="Mini ERP financeiro e administrativo para comissão de formatura de Medicina."
+    />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="MedCom ERP" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <title>MedCom ERP | Comissão de Formatura</title>
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="app-icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <section class="login-screen" id="loginScreen">
+      <div class="login-brand">
+        <span class="brand-mark" aria-hidden="true">MC</span>
+        <div>
+          <p class="eyebrow">Comissão de Formatura Medicina</p>
+          <h1>MedCom ERP</h1>
+          <p>Governança financeira, prestação de contas e organização operacional em um painel único.</p>
+        </div>
+      </div>
+
+      <form class="login-card" id="loginForm">
+        <div>
+          <p class="eyebrow">Acesso seguro</p>
+          <h2>Entrar no sistema</h2>
+          <p>Use um perfil de demonstração para navegar pelos módulos e permissões.</p>
+        </div>
+
+        <label class="field">
+          <span>Email</span>
+          <input id="loginEmail" name="email" type="email" autocomplete="email" required />
+        </label>
+
+        <label class="field">
+          <span>Senha</span>
+          <input id="loginPassword" name="password" type="password" autocomplete="current-password" required />
+        </label>
+
+        <button class="button button-primary" type="submit">Entrar</button>
+
+        <div class="demo-users" aria-label="Acessos de demonstração">
+          <button type="button" data-demo-login="admin@medcom.local">Administrador</button>
+          <button type="button" data-demo-login="tesouraria@medcom.local">Tesoureiro</button>
+          <button type="button" data-demo-login="fiscal@medcom.local">Conselho Fiscal</button>
+          <button type="button" data-demo-login="aluna@medcom.local">Formando</button>
+        </div>
+
+        <p class="login-hint">Senha dos perfis demo: <strong>med2026</strong></p>
+      </form>
+    </section>
+
+    <div class="app-shell is-hidden" id="appShell">
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-brand">
+          <span class="brand-mark" aria-hidden="true">MC</span>
+          <div>
+            <strong>MedCom ERP</strong>
+            <small>Turma Medicina 2026</small>
+          </div>
+        </div>
+
+        <nav class="side-nav" id="sideNav" aria-label="Módulos"></nav>
+
+        <div class="sidebar-footer">
+          <button class="user-chip" id="profileShortcut" type="button">
+            <span class="avatar" id="userInitials">MC</span>
+            <span>
+              <strong id="currentUserName">Usuário</strong>
+              <small id="currentUserRole">Perfil</small>
+            </span>
+          </button>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <header class="topbar">
+          <div class="topbar-main">
+            <button class="icon-button mobile-only" id="menuToggle" type="button" aria-label="Abrir menu">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
+            </button>
+            <div>
+              <p class="eyebrow" id="viewEyebrow">Dashboard executivo</p>
+              <h1 id="viewTitle">Dashboard</h1>
+              <p id="viewSubtitle">Visão consolidada da comissão.</p>
+            </div>
+          </div>
+
+          <div class="topbar-actions">
+            <label class="field search-field">
+              <span>Busca global</span>
+              <input id="globalSearch" type="search" placeholder="Aluno, fornecedor, contrato..." />
+            </label>
+            <button class="icon-button" id="themeToggle" type="button" aria-label="Alternar tema">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 1 0 9 9 8 8 0 1 1-9-9Z" /></svg>
+            </button>
+            <button class="icon-button notification-button" id="notificationToggle" type="button" aria-label="Notificações">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7M10 21h4" /></svg>
+              <span id="notificationCount">0</span>
+            </button>
+            <button class="button button-secondary" id="logoutButton" type="button">Sair</button>
+          </div>
+        </header>
+
+        <main class="content" id="viewRoot" tabindex="-1"></main>
+      </div>
+    </div>
+
+    <div class="drawer is-hidden" id="notificationDrawer" aria-live="polite">
+      <div class="drawer-heading">
+        <div>
+          <p class="eyebrow">Central</p>
+          <h2>Notificações</h2>
+        </div>
+        <button class="icon-button" id="closeNotifications" type="button" aria-label="Fechar notificações">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>
+        </button>
+      </div>
+      <div id="notificationList" class="stack-list"></div>
+    </div>
+
+    <div class="modal-backdrop is-hidden" id="modalRoot"></div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
