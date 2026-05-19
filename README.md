@@ -37,6 +37,18 @@ Senha de todos os perfis: `med2026`.
 - Relatórios com DRE simplificada, CSV, Excel via CSV e impressão/PDF.
 - Auditoria com autor, ação, entidade, data, antes/depois e exportação.
 - Dark mode, PWA e persistência em `localStorage`.
+- Tela administrativa para editar identidade da comissão, administradora, meta, multa/juros e limpar dados de teste.
+
+## Primeiro uso real
+
+Entre como `admin@medcom.local`, abra **Configurações** e preencha:
+
+- nome da comissão;
+- nome e email da administradora;
+- meta de arrecadação;
+- multa e juros.
+
+Depois use **Limpar dados de teste** para remover formandos, lançamentos, eventos e fornecedores de demonstração. A limpeza exige digitar `LIMPAR` e preserva categorias, centros de custo e o usuário administrador.
 
 ## Backend e banco
 

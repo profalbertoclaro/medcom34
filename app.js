@@ -839,8 +839,66 @@ function renderAudit() {
 }
 
 function renderSettings() {
+  const admin = state.users.find((user) => user.role === "ADMIN") || getCurrentUser();
+  const canAdmin = getCurrentUser()?.role === "ADMIN";
   return `
     <section class="grid-12">
+      <article class="panel span-12">
+        <div class="panel-heading">
+          <div>
+            <h2>Identidade da comissão</h2>
+            <p>Dados iniciais para trocar o protótipo por um ambiente da sua turma.</p>
+          </div>
+        </div>
+        <form class="form-stack" id="committeeSettingsForm">
+          <div class="form-grid">
+            <label class="field">
+              <span>Nome da comissão</span>
+              <input name="committeeName" required value="${escapeAttribute(state.settings.committeeName)}" />
+            </label>
+            <label class="field">
+              <span>Nome da administradora</span>
+              <input name="adminName" required value="${escapeAttribute(admin.name)}" />
+            </label>
+            <label class="field">
+              <span>Email da administradora</span>
+              <input name="adminEmail" type="email" required value="${escapeAttribute(admin.email)}" />
+            </label>
+            <label class="field">
+              <span>Meta de arrecadação</span>
+              <input name="fundraisingGoal" type="number" min="0" step="0.01" required value="${Number(state.settings.fundraisingGoal)}" />
+            </label>
+          </div>
+          <div class="form-grid two">
+            <label class="field">
+              <span>Multa por atraso (%)</span>
+              <input name="fineRate" type="number" min="0" step="0.01" required value="${Number(state.settings.fineRate)}" />
+            </label>
+            <label class="field">
+              <span>Juros ao mês (%)</span>
+              <input name="monthlyInterestRate" type="number" min="0" step="0.01" required value="${Number(state.settings.monthlyInterestRate)}" />
+            </label>
+          </div>
+          <button class="button button-primary" type="submit">Salvar identidade</button>
+        </form>
+      </article>
+
+      <article class="panel span-12">
+        <div class="panel-heading">
+          <div>
+            <h2>Começar do zero</h2>
+            <p>Remove os registros de demonstração e mantém a estrutura para uso real.</p>
+          </div>
+          <button class="button button-danger" type="button" data-action="clear-demo-data" ${canAdmin ? "" : "disabled"}>Limpar dados de teste</button>
+        </div>
+        <div class="mini-grid">
+          ${miniStat("Formandos atuais", state.students.length)}
+          ${miniStat("Lançamentos atuais", state.transactions.length)}
+          ${miniStat("Eventos atuais", state.events.length)}
+          ${miniStat("Fornecedores atuais", state.vendors.length)}
+        </div>
+      </article>
+
       <article class="panel span-6">
         <div class="panel-heading">
           <div>
@@ -1032,6 +1090,7 @@ function handleViewClick(event) {
   if (action === "export-students-csv") exportStudentsCsv();
   if (action === "export-dre-csv") exportDreCsv();
   if (action === "export-audit-csv") exportAuditCsv();
+  if (action === "clear-demo-data") clearDemoData();
   if (action === "print-report") window.print();
 }
 
@@ -1045,6 +1104,7 @@ function handleViewSubmit(event) {
   if (form.id === "vendorForm") handleVendorSubmit(event);
   if (form.id === "categoryForm") handleCategorySubmit(event);
   if (form.id === "costCenterForm") handleCostCenterSubmit(event);
+  if (form.id === "committeeSettingsForm") handleCommitteeSettingsSubmit(event);
 }
 
 function handleViewInput(event) {
@@ -1250,6 +1310,85 @@ function handleCostCenterSubmit(event) {
   persist();
   renderView();
   showToast("Centro de custo adicionado.");
+}
+
+function handleCommitteeSettingsSubmit(event) {
+  event.preventDefault();
+  if (getCurrentUser()?.role !== "ADMIN") {
+    showToast("Apenas administradores podem alterar estes dados.");
+    return;
+  }
+
+  const form = new FormData(event.target);
+  const admin = state.users.find((user) => user.role === "ADMIN");
+  const before = {
+    settings: structuredClone(state.settings),
+    admin: admin ? auditSnapshot(admin) : null,
+  };
+
+  state.settings.committeeName = clean(form.get("committeeName"));
+  state.settings.fundraisingGoal = Number(form.get("fundraisingGoal")) || 0;
+  state.settings.fineRate = Number(form.get("fineRate")) || 0;
+  state.settings.monthlyInterestRate = Number(form.get("monthlyInterestRate")) || 0;
+
+  if (admin) {
+    admin.name = clean(form.get("adminName"));
+    admin.email = clean(form.get("adminEmail"));
+    admin.updatedAt = new Date().toISOString();
+    if (session?.userId === admin.id) {
+      session.token = createDemoJwt(admin);
+      localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    }
+  }
+
+  recordAudit("UPDATE", "CommitteeSettings", "settings", before, {
+    settings: state.settings,
+    admin: admin ? auditSnapshot(admin) : null,
+  });
+  persist();
+  renderShell();
+  renderView();
+  showToast("Identidade da comissão atualizada.");
+}
+
+function clearDemoData() {
+  if (getCurrentUser()?.role !== "ADMIN") {
+    showToast("Apenas administradores podem limpar os dados.");
+    return;
+  }
+
+  const phrase = window.prompt('Digite LIMPAR para apagar formandos, lançamentos, eventos, fornecedores e logs de teste.');
+  if (phrase !== "LIMPAR") {
+    showToast("Limpeza cancelada.");
+    return;
+  }
+
+  const before = {
+    students: state.students.length,
+    transactions: state.transactions.length,
+    events: state.events.length,
+    vendors: state.vendors.length,
+    notifications: state.notifications.length,
+    auditLogs: state.auditLogs.length,
+  };
+
+  state.students = [];
+  state.transactions = [];
+  state.events = [];
+  state.vendors = [];
+  state.notifications = [];
+  state.auditLogs = [];
+  state.filters = {};
+  recordAudit("DELETE", "DemoData", "seed-records", before, {
+    students: 0,
+    transactions: 0,
+    events: 0,
+    vendors: 0,
+  });
+  persist();
+  renderShell();
+  renderView();
+  showToast("Dados de teste removidos. A estrutura foi preservada.");
 }
 
 function suggestCategory() {
