@@ -1,71 +1,142 @@
-# MedCom ERP
+# MeuDinDin
 
-Mini ERP web responsivo para Comissão de Formatura de Medicina, focado em transparência financeira, governança, prestação de contas, inadimplência, contratos, eventos e auditoria.
+Aplicativo financeiro pessoal gratuito, em português do Brasil, criado com React Native, Expo, TypeScript e Supabase.
 
-## Como abrir
+Esta primeira entrega foca no MVP estrutural: navegação, tema claro/escuro, autenticação, schema Supabase/PostgreSQL, telas principais e formulários iniciais para contas, cartões, categorias, centros de custo e transações.
 
-Abra `index.html` no navegador ou rode um servidor local:
+## Stack
 
-```bash
-python3 -m http.server 4173
+- React Native com Expo
+- TypeScript
+- Supabase Auth
+- Supabase/PostgreSQL
+- React Navigation
+- Zustand
+- Interface responsiva para web e iPhone
+- Tema claro, escuro e automático pelo sistema
+
+## Estrutura
+
+```text
+.
+├── App.tsx
+├── app.json
+├── package.json
+├── src
+│   ├── app
+│   ├── components
+│   ├── config
+│   ├── data
+│   ├── hooks
+│   ├── lib
+│   ├── navigation
+│   ├── screens
+│   ├── services
+│   ├── stores
+│   ├── theme
+│   ├── types
+│   └── utils
+└── supabase
+    ├── config.toml
+    ├── schema.sql
+    └── seed.sql
 ```
 
-Depois acesse `http://localhost:4173`.
+## Configurar o Supabase
 
-## Acessos de demonstração
+1. Crie um projeto no Supabase.
+2. Abra o SQL Editor.
+3. Rode `supabase/schema.sql`.
+4. Rode `supabase/seed.sql`.
+5. Em Authentication, mantenha Email/Password habilitado.
+6. Copie a Project URL e a anon public key.
+7. Crie um arquivo `.env` baseado em `.env.example`:
 
-Senha de todos os perfis: `med2026`.
+```bash
+EXPO_PUBLIC_SUPABASE_URL=https://seu-projeto.supabase.co
+EXPO_PUBLIC_SUPABASE_ANON_KEY=sua-chave-anon-publica
+```
 
-- `admin@medcom.local` - Administrador
-- `presidencia@medcom.local` - Presidente da Comissão
-- `tesouraria@medcom.local` - Tesoureiro
-- `fiscal@medcom.local` - Conselho Fiscal
-- `aluna@medcom.local` - Formando
-- `auditoria@medcom.local` - Auditor
+O schema ativa Row Level Security e cria políticas para que cada usuário acesse apenas seus próprios dados. Ao cadastrar um usuário, o trigger `handle_new_user` cria o perfil e insere categorias e centros de custo padrão.
 
-## O que está implementado
+## Rodar localmente
 
-- Autenticação local com token JWT demonstrativo.
-- Controle de permissões por perfil.
-- Dashboard executivo com saldo, receitas, despesas, inadimplência, meta, próximos vencimentos e alertas inteligentes.
-- Gestão financeira com receitas, despesas, transferências, ajustes, estornos e reembolsos.
-- Plano de contas com categorias, subcategorias, tags e centros de custo obrigatórios.
-- Gestão de formandos com parcelas, inadimplência, acordos e recibos.
-- Eventos com orçamento previsto x realizado, fornecedores, contratos e checklist.
-- Fornecedores com contratos, parcelas, anexos e histórico.
-- Fluxo de caixa realizado e projetado.
-- Relatórios com DRE simplificada, CSV, Excel via CSV e impressão/PDF.
-- Auditoria com autor, ação, entidade, data, antes/depois e exportação.
-- Dark mode, PWA e persistência em `localStorage`.
-- Tela administrativa para editar identidade da comissão, administradora, meta, multa/juros e limpar dados de teste.
+Instale Node.js com npm disponível no PATH. Depois:
 
-## Primeiro uso real
+```bash
+npm install
+npm run start
+```
 
-Entre como `admin@medcom.local`, abra **Configurações** e preencha:
+Para web:
 
-- nome da comissão;
-- nome e email da administradora;
-- meta de arrecadação;
-- multa e juros.
+```bash
+npm run web
+```
 
-Depois use **Limpar dados de teste** para remover formandos, lançamentos, eventos e fornecedores de demonstração. A limpeza exige digitar `LIMPAR` e preserva categorias, centros de custo e o usuário administrador.
+Para iPhone com Expo Go:
 
-## Backend e banco
+```bash
+npm run start
+```
 
-O arquivo `prisma/schema.prisma` contém a modelagem PostgreSQL preparada para a versão Node.js/Prisma, incluindo:
+Depois escaneie o QR Code pelo app Expo Go no iPhone. O iPhone e o computador precisam estar na mesma rede.
 
-- usuários e perfis;
-- formandos, planos e parcelas;
-- lançamentos financeiros;
-- categorias e centros de custo;
-- fornecedores, contratos e anexos;
-- eventos e checklist;
-- notificações;
-- auditoria;
-- tags e contas bancárias.
+## Publicar na web
 
-Veja também `docs/architecture.md` para a proposta de evolução para Next.js, Node.js, Prisma, PostgreSQL, storage de anexos e autenticação de produção.
+Gere uma build estática:
 
-## Observação técnica
+```bash
+npx expo export --platform web
+```
 
-Esta entrega é uma versão estática funcional porque o workspace não possui `npm` instalado. Ela pode ser usada imediatamente como protótipo navegável e servir como base visual/funcional para migração para Next.js, TailwindCSS, Shadcn/UI, Recharts, Node.js, Prisma e PostgreSQL.
+Publique a pasta `dist` em um host estático, como Vercel, Netlify, Cloudflare Pages ou Supabase Storage. Configure as mesmas variáveis `EXPO_PUBLIC_SUPABASE_URL` e `EXPO_PUBLIC_SUPABASE_ANON_KEY` no ambiente de build.
+
+## Telas disponíveis
+
+- Login
+- Cadastro
+- Recuperação de senha
+- Dashboard
+- Transações
+- Nova transação
+- Contas
+- Nova conta
+- Cartões
+- Novo cartão
+- Faturas
+- Categorias e subcategorias
+- Centros de custo
+- Importar histórico
+- Conciliação bancária
+- Conciliação de cartão
+- Relatórios
+- Configurações
+- Perfil do usuário
+
+## Escopo desta etapa
+
+Implementado:
+
+- Estrutura Expo/TypeScript
+- Navegação autenticada e não autenticada
+- Tema claro/escuro
+- Supabase Auth
+- Cliente Supabase
+- Stores com Zustand
+- Serviços de banco
+- Schema SQL completo com RLS
+- Seed de moedas e tipos de conta
+- Trigger de perfil e dados padrão por usuário
+- Telas principais do MVP
+
+Ainda não implementado nesta etapa:
+
+- Open Finance
+- Integrações bancárias automáticas
+- OCR
+- IA
+- Parser completo de CSV/XLS/XLSX
+- OFX
+
+Esses pontos ficam como evolução futura, como solicitado.
