@@ -1162,15 +1162,21 @@ function renderSettings() {
         <div class="panel-heading">
           <div>
             <h2>Começar do zero</h2>
-            <p>Remove os registros de demonstração e mantém a estrutura para uso real.</p>
+            <p>Apaga os lançamentos financeiros de teste e zera saldos, mantendo a estrutura padrão.</p>
           </div>
-          <button class="button button-danger" type="button" data-action="clear-demo-data" ${canAdmin ? "" : "disabled"}>Limpar dados de teste</button>
+          <div class="toolbar-group">
+            <button class="button button-danger" type="button" data-action="clear-demo-data" ${canAdmin ? "" : "disabled"}>Limpar lançamentos de teste</button>
+          </div>
         </div>
         <div class="mini-grid">
           ${miniStat("Formandos atuais", state.students.length)}
           ${miniStat("Lançamentos atuais", state.transactions.length)}
           ${miniStat("Eventos atuais", state.events.length)}
           ${miniStat("Fornecedores atuais", state.vendors.length)}
+          ${miniStat("Contas", state.accounts.length)}
+          ${miniStat("Cartões", state.creditCards.length)}
+          ${miniStat("Categorias", state.categories.length)}
+          ${miniStat("Centros de custo", state.costCenters.length)}
         </div>
       </article>
 
@@ -1224,7 +1230,10 @@ function renderSettings() {
                 <strong>${escapeHtml(item.category)} → ${escapeHtml(item.subcategory)}</strong>
                 <small class="muted">${typeLabel(item.type)} • ${escapeHtml(item.group)} • ${item.tags.map(escapeHtml).join(", ")}</small>
               </div>
-              <span class="chip">${item.type}</span>
+              <div class="row-actions">
+                <span class="chip">${item.type}</span>
+                <button class="icon-button" type="button" title="Remover categoria" data-action="delete-category" data-id="${item.id}" ${canAdmin ? "" : "disabled"}>${iconSvg("trash")}</button>
+              </div>
             </div>
           `).join("")}
         </div>
@@ -1261,7 +1270,10 @@ function renderSettings() {
                 <strong>${escapeHtml(item.name)}</strong>
                 <small class="muted">${escapeHtml(item.owner)}</small>
               </div>
-              <strong>${money(item.budget)}</strong>
+              <div class="row-actions">
+                <strong>${money(item.budget)}</strong>
+                <button class="icon-button" type="button" title="Remover centro de custo" data-action="delete-cost-center" data-id="${item.id}" ${canAdmin ? "" : "disabled"}>${iconSvg("trash")}</button>
+              </div>
             </div>
           `).join("")}
         </div>
@@ -1369,6 +1381,8 @@ function handleViewClick(event) {
   if (action === "export-dre-csv") exportDreCsv();
   if (action === "export-audit-csv") exportAuditCsv();
   if (action === "clear-demo-data") clearDemoData();
+  if (action === "delete-category") deleteCategory(actionTarget.dataset.id);
+  if (action === "delete-cost-center") deleteCostCenter(actionTarget.dataset.id);
   if (action === "print-report") window.print();
 }
 
@@ -1688,6 +1702,55 @@ function handleCostCenterSubmit(event) {
   showToast("Centro de custo adicionado.");
 }
 
+function deleteCategory(id) {
+  if (getCurrentUser()?.role !== "ADMIN") {
+    showToast("Apenas administradores podem remover categorias.");
+    return;
+  }
+
+  const item = state.categories.find((category) => category.id === id);
+  if (!item) return;
+
+  const inUse = state.transactions.some((transaction) => transaction.categoryId === id);
+  if (inUse) {
+    showToast("Categoria em uso não pode ser removida.");
+    return;
+  }
+
+  if (!window.confirm(`Remover a categoria "${item.category} → ${item.subcategory}"?`)) return;
+
+  state.categories = state.categories.filter((category) => category.id !== id);
+  recordAudit("DELETE", "Category", id, item, null);
+  persist();
+  renderView();
+  showToast("Categoria removida.");
+}
+
+function deleteCostCenter(id) {
+  if (getCurrentUser()?.role !== "ADMIN") {
+    showToast("Apenas administradores podem remover centros de custo.");
+    return;
+  }
+
+  const item = state.costCenters.find((center) => center.id === id);
+  if (!item) return;
+
+  const inUse = state.transactions.some((transaction) => transaction.costCenterId === id) ||
+    state.events.some((event) => event.costCenterId === id);
+  if (inUse) {
+    showToast("Centro de custo em uso não pode ser removido.");
+    return;
+  }
+
+  if (!window.confirm(`Remover o centro de custo "${item.name}"?`)) return;
+
+  state.costCenters = state.costCenters.filter((center) => center.id !== id);
+  recordAudit("DELETE", "CostCenter", id, item, null);
+  persist();
+  renderView();
+  showToast("Centro de custo removido.");
+}
+
 function handleCommitteeSettingsSubmit(event) {
   event.preventDefault();
   if (getCurrentUser()?.role !== "ADMIN") {
@@ -1733,44 +1796,45 @@ function clearDemoData() {
     return;
   }
 
-  const phrase = window.prompt('Digite LIMPAR para apagar formandos, lançamentos, eventos, fornecedores e logs de teste.');
+  const phrase = window.prompt('Digite LIMPAR para apagar lançamentos financeiros de teste e zerar saldos/extratos/faturas.');
   if (phrase !== "LIMPAR") {
     showToast("Limpeza cancelada.");
     return;
   }
 
   const before = {
-    students: state.students.length,
     transactions: state.transactions.length,
-    events: state.events.length,
-    vendors: state.vendors.length,
-    accounts: state.accounts.length,
-    creditCards: state.creditCards.length,
+    accounts: auditSnapshot(state.accounts),
+    creditCards: auditSnapshot(state.creditCards),
     notifications: state.notifications.length,
     auditLogs: state.auditLogs.length,
   };
 
-  state.students = [];
   state.transactions = [];
-  state.events = [];
-  state.vendors = [];
-  state.accounts = seedAccounts();
-  state.creditCards = seedCreditCards(state.accounts);
+  state.accounts = state.accounts.map((account) => ({
+    ...account,
+    openingBalance: 0,
+    currentBalance: 0,
+    reconciledBalance: 0,
+    statementBalance: 0,
+    statementDate: todayISO(),
+  }));
+  state.creditCards = state.creditCards.map((card) => ({
+    ...card,
+    currentInvoice: 0,
+  }));
   state.notifications = [];
   state.auditLogs = [];
   state.filters = {};
-  recordAudit("DELETE", "DemoData", "seed-records", before, {
-    students: 0,
+  recordAudit("DELETE", "FinancialDemoData", "seed-transactions", before, {
     transactions: 0,
-    events: 0,
-    vendors: 0,
-    accounts: state.accounts.length,
-    creditCards: state.creditCards.length,
+    accounts: "saldos zerados",
+    creditCards: "faturas zeradas",
   });
   persist();
   renderShell();
   renderView();
-  showToast("Dados de teste removidos. A estrutura foi preservada.");
+  showToast("Lançamentos removidos e saldos zerados. A estrutura foi preservada.");
 }
 
 function suggestCategory() {

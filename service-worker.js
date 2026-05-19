@@ -1,10 +1,10 @@
-const CACHE_NAME = "medcom-erp-v6";
+const CACHE_NAME = "medcom-erp-v8";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./styles.css?v=6",
-  "./app.js?v=6",
-  "./supabase-config.js?v=6",
+  "./styles.css?v=8",
+  "./app.js?v=8",
+  "./supabase-config.js?v=8",
   "./manifest.webmanifest",
   "./app-icon.svg",
   "./apple-touch-icon.png",
