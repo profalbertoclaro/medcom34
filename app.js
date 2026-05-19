@@ -1,6 +1,12 @@
-const STORAGE_KEY = "medcom-erp:v2";
+const STORAGE_KEY = "medcom-erp:v5";
 const SESSION_KEY = "medcom-erp:session";
 const DEMO_PASSWORD = "med2026";
+const CLOUD_STATUS = {
+  local: "Modo local",
+  connected: "Nuvem conectada",
+  saving: "Salvando na nuvem...",
+  error: "Erro na nuvem",
+};
 
 const ROLE_LABELS = {
   ADMIN: "Administrador",
@@ -50,15 +56,20 @@ let session = loadSession();
 let currentView = "dashboard";
 let currentTransactionType = "RECEITA";
 let toastTimer = null;
+let cloudClient = null;
+let cloudStateId = "medcom34";
+let cloudStatus = CLOUD_STATUS.local;
+let cloudSaveTimer = null;
 
 const elements = {};
 
 boot();
 
-function boot() {
+async function boot() {
   cacheElements();
   bindEvents();
   applyTheme();
+  await hydrateStateFromCloud();
   registerServiceWorker();
 
   if (session && getCurrentUser()) {
@@ -86,6 +97,7 @@ function cacheElements() {
   elements.userInitials = document.querySelector("#userInitials");
   elements.globalSearch = document.querySelector("#globalSearch");
   elements.notificationCount = document.querySelector("#notificationCount");
+  elements.cloudStatus = document.querySelector("#cloudStatus");
   elements.notificationDrawer = document.querySelector("#notificationDrawer");
   elements.notificationList = document.querySelector("#notificationList");
   elements.modalRoot = document.querySelector("#modalRoot");
@@ -220,6 +232,10 @@ function renderShell() {
   const unread = getNotifications().filter((item) => !item.read).length;
   elements.notificationCount.textContent = unread;
   elements.notificationCount.hidden = unread === 0;
+  if (elements.cloudStatus) {
+    elements.cloudStatus.textContent = cloudStatus;
+    elements.cloudStatus.className = `badge ${cloudStatus === CLOUD_STATUS.error ? "danger" : cloudStatus === CLOUD_STATUS.local ? "warning" : "info"}`;
+  }
   renderNotifications();
 }
 
@@ -412,14 +428,23 @@ function renderFinance() {
   const userCanWrite = canWriteFinance();
   const transactions = getFilteredTransactions();
   const categories = state.categories.filter((item) => item.type === currentTransactionType);
+  const wallet = getWalletSummary();
+  const reconciliationTransactions = getFilteredReconciliationTransactions();
 
   return `
+    <section class="metrics-grid">
+      ${metricCard("Saldo em contas", money(wallet.ledgerBalance), "Bancos, aplicações e dinheiro em espécie", "is-primary", "Contábil", "")}
+      ${metricCard("Saldo conciliado", money(wallet.reconciledBalance), "Somente lançamentos conferidos no extrato", "", "Conferido", "")}
+      ${metricCard("Faturas abertas", money(wallet.cardOpenTotal), "Compras em cartões de crédito", "", "Cartões", wallet.cardOpenTotal ? "is-danger" : "")}
+      ${metricCard("Diferença extrato", money(wallet.statementDifference), "Saldo contábil menos saldo informado do extrato", "", wallet.statementDifference ? "Revisar" : "Ok", wallet.statementDifference ? "is-danger" : "")}
+    </section>
+
     <section class="grid-12">
       <article class="panel span-12">
         <div class="panel-heading">
           <div>
             <h2>Controle financeiro avançado</h2>
-            <p>Lançamentos obrigam plano de contas, centro de custo e status de pagamento.</p>
+            <p>Lançamentos obrigam plano de contas, centro de custo, conta/cartão e status de conciliação.</p>
           </div>
           <div class="segmented-control" role="group" aria-label="Tipo de lançamento">
             ${["RECEITA", "DESPESA", "TRANSFERENCIA", "AJUSTE", "ESTORNO", "REEMBOLSO"].map((type) => `
@@ -479,6 +504,29 @@ function renderFinance() {
                 </select>
               </label>
             </div>
+            <div class="form-grid">
+              <label class="field">
+                <span>Conta/cartão</span>
+                <select name="paymentTarget" required>
+                  ${paymentTargetOptions()}
+                </select>
+              </label>
+              <label class="field">
+                <span>Conta destino</span>
+                <select name="transferToAccountId">
+                  <option value="">Somente para transferência</option>
+                  ${state.accounts.filter((item) => item.active).map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")}
+                </select>
+              </label>
+              <label class="field">
+                <span>Nº documento</span>
+                <input name="documentNumber" placeholder="PIX, cheque, NSU, comprovante" />
+              </label>
+              <label class="field">
+                <span>Histórico do extrato</span>
+                <input name="statementMemo" placeholder="Texto que aparece no banco/cartão" />
+              </label>
+            </div>
             <label class="field">
               <span>Observações</span>
               <textarea name="notes" placeholder="Comprovante, conta bancária, justificativa ou regra de rateio"></textarea>
@@ -489,6 +537,77 @@ function renderFinance() {
             </div>
           </form>
         ` : restrictedNotice("Seu perfil pode consultar os lançamentos, mas não criar movimentações financeiras.")}
+      </article>
+
+      <article class="panel span-8">
+        <div class="panel-heading">
+          <div>
+            <h2>Contas bancárias e dinheiro</h2>
+            <p>Saldo contábil, saldo do extrato e diferença para conciliação.</p>
+          </div>
+        </div>
+        ${accountsTable()}
+      </article>
+
+      <article class="panel span-4">
+        <div class="panel-heading">
+          <div>
+            <h2>Nova conta</h2>
+            <p>Banco, aplicação ou dinheiro em espécie.</p>
+          </div>
+        </div>
+        ${userCanWrite ? accountForm() : restrictedNotice("Seu perfil não pode cadastrar contas.")}
+      </article>
+
+      <article class="panel span-8">
+        <div class="panel-heading">
+          <div>
+            <h2>Cartões de crédito</h2>
+            <p>Limite, fatura aberta e conta usada para pagamento.</p>
+          </div>
+        </div>
+        ${creditCardsTable()}
+      </article>
+
+      <article class="panel span-4">
+        <div class="panel-heading">
+          <div>
+            <h2>Novo cartão</h2>
+            <p>Controle de limite, fechamento e vencimento.</p>
+          </div>
+        </div>
+        ${userCanWrite ? creditCardForm() : restrictedNotice("Seu perfil não pode cadastrar cartões.")}
+      </article>
+
+      <article class="panel span-12">
+        <div class="panel-heading">
+          <div>
+            <h2>Conciliação de extrato</h2>
+            <p>Informe o saldo do extrato e marque os lançamentos conferidos.</p>
+          </div>
+          ${userCanWrite ? `<button class="button button-secondary" type="button" data-action="reconcile-visible">Conciliar pendentes visíveis</button>` : ""}
+        </div>
+        ${userCanWrite ? statementBalanceForm() : ""}
+        <div class="toolbar">
+          <div class="toolbar-group">
+            <label class="field">
+              <span>Conta</span>
+              <select id="reconcileAccount">
+                ${selectOption("TODOS", "Todas", getFilter("reconcileAccount", "TODOS"))}
+                ${state.accounts.map((item) => selectOption(item.id, item.name, getFilter("reconcileAccount", "TODOS"))).join("")}
+              </select>
+            </label>
+            <label class="field">
+              <span>Status conciliação</span>
+              <select id="reconcileStatus">
+                ${selectOption("TODOS", "Todos", getFilter("reconcileStatus", "PENDENTE"))}
+                ${selectOption("PENDENTE", "Pendentes", getFilter("reconcileStatus", "PENDENTE"))}
+                ${selectOption("CONCILIADO", "Conciliados", getFilter("reconcileStatus", "PENDENTE"))}
+              </select>
+            </label>
+          </div>
+        </div>
+        ${reconciliationTable(reconciliationTransactions, userCanWrite)}
       </article>
 
       <article class="panel span-12">
@@ -512,6 +631,14 @@ function renderFinance() {
               <select id="financeCostCenter">
                 ${selectOption("TODOS", "Todos", getFilter("financeCostCenter", "TODOS"))}
                 ${state.costCenters.map((item) => selectOption(item.id, item.name, getFilter("financeCostCenter", "TODOS"))).join("")}
+              </select>
+            </label>
+            <label class="field">
+              <span>Conta/cartão</span>
+              <select id="financeWallet">
+                ${selectOption("TODOS", "Todos", getFilter("financeWallet", "TODOS"))}
+                ${state.accounts.map((item) => selectOption(`account:${item.id}`, item.name, getFilter("financeWallet", "TODOS"))).join("")}
+                ${state.creditCards.map((item) => selectOption(`card:${item.id}`, item.name, getFilter("financeWallet", "TODOS"))).join("")}
               </select>
             </label>
           </div>
@@ -567,6 +694,154 @@ function renderFinance() {
         </div>
       </article>
     </section>
+  `;
+}
+
+function paymentTargetOptions() {
+  const accounts = state.accounts
+    .filter((item) => item.active)
+    .map((item) => `<option value="account:${item.id}">${escapeHtml(accountTypeLabel(item.type))}: ${escapeHtml(item.name)}</option>`)
+    .join("");
+  const cards = state.creditCards
+    .filter((item) => item.active)
+    .map((item) => `<option value="card:${item.id}">Cartão: ${escapeHtml(item.name)}</option>`)
+    .join("");
+  return `${accounts}${cards}`;
+}
+
+function accountForm() {
+  return `
+    <form class="form-stack" id="accountForm">
+      <label class="field"><span>Nome da conta</span><input name="name" required placeholder="Ex.: Nubank, Caixa da turma" /></label>
+      <div class="form-grid two">
+        <label class="field">
+          <span>Tipo</span>
+          <select name="type">
+            <option value="BANCO">Conta bancária</option>
+            <option value="DINHEIRO">Dinheiro</option>
+            <option value="APLICACAO">Aplicação</option>
+          </select>
+        </label>
+        <label class="field"><span>Instituição</span><input name="institution" placeholder="Banco, corretora ou responsável" /></label>
+      </div>
+      <div class="form-grid two">
+        <label class="field"><span>Saldo inicial</span><input name="initialBalance" type="number" step="0.01" inputmode="decimal" value="0" /></label>
+        <label class="field"><span>Saldo do extrato</span><input name="statementBalance" type="number" step="0.01" inputmode="decimal" value="0" /></label>
+      </div>
+      <button class="button button-primary" type="submit">Adicionar conta</button>
+    </form>
+  `;
+}
+
+function creditCardForm() {
+  return `
+    <form class="form-stack" id="creditCardForm">
+      <label class="field"><span>Nome do cartão</span><input name="name" required placeholder="Ex.: Cartão comissão" /></label>
+      <div class="form-grid two">
+        <label class="field"><span>Bandeira</span><input name="brand" placeholder="Visa, Mastercard..." /></label>
+        <label class="field"><span>Limite</span><input name="limit" type="number" min="0" step="0.01" inputmode="decimal" required /></label>
+      </div>
+      <div class="form-grid two">
+        <label class="field"><span>Fechamento</span><input name="closingDay" type="number" min="1" max="31" value="5" required /></label>
+        <label class="field"><span>Vencimento</span><input name="dueDay" type="number" min="1" max="31" value="15" required /></label>
+      </div>
+      <label class="field">
+        <span>Conta para pagamento</span>
+        <select name="accountId">
+          ${state.accounts.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")}
+        </select>
+      </label>
+      <button class="button button-primary" type="submit">Adicionar cartão</button>
+    </form>
+  `;
+}
+
+function statementBalanceForm() {
+  return `
+    <form class="form-grid" id="statementBalanceForm">
+      <label class="field">
+        <span>Conta conferida</span>
+        <select name="accountId">
+          ${state.accounts.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")}
+        </select>
+      </label>
+      <label class="field"><span>Data do extrato</span><input name="statementDate" type="date" value="${todayISO()}" required /></label>
+      <label class="field"><span>Saldo no extrato</span><input name="statementBalance" type="number" step="0.01" inputmode="decimal" required /></label>
+      <button class="button button-primary" type="submit">Atualizar extrato</button>
+    </form>
+  `;
+}
+
+function accountsTable() {
+  return `
+    <div class="data-table" style="--cols: minmax(180px, 1.3fr) 110px 130px 130px 130px 130px;">
+      <div class="table-row header"><div>Conta</div><div>Tipo</div><div>Contábil</div><div>Conciliado</div><div>Extrato</div><div>Diferença</div></div>
+      ${state.accounts.map((item) => {
+        const ledger = accountLedgerBalance(item.id);
+        const reconciled = accountReconciledBalance(item.id);
+        const statement = Number(item.statementBalance || 0);
+        const difference = ledger - statement;
+        return `
+          <div class="table-row">
+            <div class="table-cell"><strong>${escapeHtml(item.name)}</strong><span class="subtle">${escapeHtml(item.institution || "Sem instituição")} • extrato ${formatDate(item.statementDate)}</span></div>
+            <div class="table-cell"><span class="badge info">${accountTypeLabel(item.type)}</span></div>
+            <div class="table-cell amount ${ledger >= 0 ? "success" : "danger"}">${money(ledger)}</div>
+            <div class="table-cell">${money(reconciled)}</div>
+            <div class="table-cell">${money(statement)}</div>
+            <div class="table-cell amount ${Math.abs(difference) < 0.01 ? "success" : "danger"}">${money(difference)}</div>
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function creditCardsTable() {
+  if (!state.creditCards.length) return emptyState("Nenhum cartão cadastrado.");
+  return `
+    <div class="data-table" style="--cols: minmax(180px, 1.2fr) 110px 130px 130px 110px 130px;">
+      <div class="table-row header"><div>Cartão</div><div>Bandeira</div><div>Fatura atual</div><div>Limite</div><div>Fecha/Vence</div><div>Conta</div></div>
+      ${state.creditCards.map((card) => {
+        const invoice = cardInvoiceTotal(card.id);
+        const available = Number(card.limit || 0) - invoice;
+        return `
+          <div class="table-row">
+            <div class="table-cell"><strong>${escapeHtml(card.name)}</strong><span class="subtle">Disponível: ${money(available)}</span></div>
+            <div class="table-cell"><span class="badge info">${escapeHtml(card.brand || "Cartão")}</span></div>
+            <div class="table-cell amount expense">${money(invoice)}</div>
+            <div class="table-cell">${money(card.limit)}</div>
+            <div class="table-cell">${Number(card.closingDay || 1)}/${Number(card.dueDay || 1)}</div>
+            <div class="table-cell">${escapeHtml(accountName(card.accountId))}</div>
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function reconciliationTable(transactions, userCanWrite) {
+  if (!transactions.length) return emptyState("Nenhum lançamento para os filtros de conciliação.");
+  return `
+    <div class="data-table" style="--cols: minmax(180px, 1.2fr) 120px 120px 130px 140px 130px ${userCanWrite ? "100px" : ""};">
+      <div class="table-row header"><div>Lançamento</div><div>Data</div><div>Conta</div><div>Documento</div><div>Valor</div><div>Status</div>${userCanWrite ? "<div>Ações</div>" : ""}</div>
+      ${transactions.map((item) => `
+        <div class="table-row">
+          <div class="table-cell"><strong>${escapeHtml(item.description)}</strong><span class="subtle">${escapeHtml(item.statementMemo || item.category || "")}</span></div>
+          <div class="table-cell">${formatDate(item.paidAt || item.date)}</div>
+          <div class="table-cell">${escapeHtml(accountName(item.accountId))}</div>
+          <div class="table-cell">${escapeHtml(item.documentNumber || "-")}</div>
+          <div class="table-cell amount ${transactionFlow(item) >= 0 ? "income" : "expense"}">${money(Math.abs(transactionFlow(item)))}</div>
+          <div class="table-cell"><span class="badge ${item.reconciled ? "success" : "warning"}">${item.reconciled ? "Conciliado" : "Pendente"}</span></div>
+          ${userCanWrite ? `
+            <div class="row-actions">
+              ${item.reconciled
+                ? `<button class="icon-button" type="button" title="Desfazer conciliação" data-action="mark-unreconciled" data-id="${item.id}">${iconSvg("undo")}</button>`
+                : `<button class="icon-button" type="button" title="Marcar como conciliado" data-action="mark-reconciled" data-id="${item.id}">${iconSvg("check")}</button>`}
+            </div>
+          ` : ""}
+        </div>
+      `).join("")}
+    </div>
   `;
 }
 
@@ -1084,6 +1359,9 @@ function handleViewClick(event) {
   if (action === "ai-categorize") suggestCategory();
   if (action === "delete-transaction") deleteTransaction(actionTarget.dataset.id);
   if (action === "mark-paid") markTransactionPaid(actionTarget.dataset.id);
+  if (action === "mark-reconciled") markTransactionReconciled(actionTarget.dataset.id, true);
+  if (action === "mark-unreconciled") markTransactionReconciled(actionTarget.dataset.id, false);
+  if (action === "reconcile-visible") reconcileVisibleTransactions();
   if (action === "student-receipt") openReceipt(actionTarget.dataset.id);
   if (action === "student-agreement") registerAgreement(actionTarget.dataset.id);
   if (action === "export-finance-csv") exportFinanceCsv();
@@ -1102,6 +1380,9 @@ function handleViewSubmit(event) {
   if (form.id === "studentForm") handleStudentSubmit(event);
   if (form.id === "eventForm") handleEventSubmit(event);
   if (form.id === "vendorForm") handleVendorSubmit(event);
+  if (form.id === "accountForm") handleAccountSubmit(event);
+  if (form.id === "creditCardForm") handleCreditCardSubmit(event);
+  if (form.id === "statementBalanceForm") handleStatementBalanceSubmit(event);
   if (form.id === "categoryForm") handleCategorySubmit(event);
   if (form.id === "costCenterForm") handleCostCenterSubmit(event);
   if (form.id === "committeeSettingsForm") handleCommitteeSettingsSubmit(event);
@@ -1116,7 +1397,7 @@ function handleViewInput(event) {
 }
 
 function handleViewChange(event) {
-  const ids = ["financeStatus", "financeCostCenter", "studentStatus"];
+  const ids = ["financeStatus", "financeCostCenter", "financeWallet", "reconcileAccount", "reconcileStatus", "studentStatus"];
   if (ids.includes(event.target.id)) {
     setFilter(event.target.id, event.target.value);
     renderView();
@@ -1129,6 +1410,8 @@ function handleFinanceSubmit(event) {
   const form = new FormData(event.target);
   const category = state.categories.find((item) => item.id === form.get("category"));
   const [linkType, linkedId] = String(form.get("linkId") || "").split(":");
+  const [targetType, targetId] = String(form.get("paymentTarget") || "").split(":");
+  const paymentMethod = targetType === "card" ? "CARTAO_CREDITO" : accountPaymentMethod(targetId);
   const payload = {
     id: uid("txn"),
     type: form.get("type"),
@@ -1146,6 +1429,15 @@ function handleFinanceSubmit(event) {
     eventId: linkType === "event" ? linkedId : "",
     vendorId: linkType === "vendor" ? linkedId : "",
     studentId: "",
+    paymentMethod,
+    accountId: targetType === "account" ? targetId : "",
+    transferToAccountId: form.get("transferToAccountId") || "",
+    cardId: targetType === "card" ? targetId : "",
+    documentNumber: clean(form.get("documentNumber")),
+    statementMemo: clean(form.get("statementMemo")),
+    reconciled: false,
+    reconciledAt: "",
+    statementDate: "",
     notes: clean(form.get("notes")),
     createdBy: getCurrentUser().id,
     createdAt: new Date().toISOString(),
@@ -1155,6 +1447,18 @@ function handleFinanceSubmit(event) {
   if (!payload.description || !Number.isFinite(payload.amount) || payload.amount <= 0) {
     showToast("Preencha descrição e valor válido.");
     return;
+  }
+
+  if (payload.cardId && payload.type !== "DESPESA") {
+    showToast("Cartão de crédito só pode ser usado em despesas.");
+    return;
+  }
+
+  if (payload.type === "TRANSFERENCIA") {
+    if (!payload.accountId || !payload.transferToAccountId || payload.accountId === payload.transferToAccountId) {
+      showToast("Escolha contas de origem e destino diferentes para transferência.");
+      return;
+    }
   }
 
   state.transactions.unshift(payload);
@@ -1265,6 +1569,78 @@ function handleVendorSubmit(event) {
   showToast("Fornecedor cadastrado.");
 }
 
+function handleAccountSubmit(event) {
+  event.preventDefault();
+  if (!canWriteFinance()) return showToast("Perfil sem permissão para criar contas.");
+  const form = new FormData(event.target);
+  const payload = {
+    id: uid("acc"),
+    name: clean(form.get("name")),
+    type: form.get("type"),
+    institution: clean(form.get("institution")),
+    initialBalance: Number(form.get("initialBalance")) || 0,
+    statementBalance: Number(form.get("statementBalance")) || 0,
+    statementDate: todayISO(),
+    active: true,
+    createdAt: new Date().toISOString(),
+  };
+
+  if (!payload.name) {
+    showToast("Informe o nome da conta.");
+    return;
+  }
+
+  state.accounts.push(payload);
+  recordAudit("CREATE", "Account", payload.id, null, payload);
+  persist();
+  renderView();
+  showToast("Conta adicionada.");
+}
+
+function handleCreditCardSubmit(event) {
+  event.preventDefault();
+  if (!canWriteFinance()) return showToast("Perfil sem permissão para criar cartões.");
+  const form = new FormData(event.target);
+  const payload = {
+    id: uid("card"),
+    name: clean(form.get("name")),
+    brand: clean(form.get("brand")) || "Cartão",
+    limit: Number(form.get("limit")) || 0,
+    closingDay: clampDay(form.get("closingDay")),
+    dueDay: clampDay(form.get("dueDay")),
+    accountId: form.get("accountId"),
+    active: true,
+    createdAt: new Date().toISOString(),
+  };
+
+  if (!payload.name || payload.limit <= 0) {
+    showToast("Informe nome e limite do cartão.");
+    return;
+  }
+
+  state.creditCards.push(payload);
+  recordAudit("CREATE", "CreditCard", payload.id, null, payload);
+  persist();
+  renderView();
+  showToast("Cartão adicionado.");
+}
+
+function handleStatementBalanceSubmit(event) {
+  event.preventDefault();
+  if (!canWriteFinance()) return showToast("Perfil sem permissão para conciliar.");
+  const form = new FormData(event.target);
+  const account = state.accounts.find((item) => item.id === form.get("accountId"));
+  if (!account) return;
+
+  const before = structuredClone(account);
+  account.statementBalance = Number(form.get("statementBalance")) || 0;
+  account.statementDate = form.get("statementDate") || todayISO();
+  recordAudit("UPDATE", "AccountStatement", account.id, before, account);
+  persist();
+  renderView();
+  showToast("Saldo do extrato atualizado.");
+}
+
 function handleCategorySubmit(event) {
   event.preventDefault();
   const form = new FormData(event.target);
@@ -1368,6 +1744,8 @@ function clearDemoData() {
     transactions: state.transactions.length,
     events: state.events.length,
     vendors: state.vendors.length,
+    accounts: state.accounts.length,
+    creditCards: state.creditCards.length,
     notifications: state.notifications.length,
     auditLogs: state.auditLogs.length,
   };
@@ -1376,6 +1754,8 @@ function clearDemoData() {
   state.transactions = [];
   state.events = [];
   state.vendors = [];
+  state.accounts = seedAccounts();
+  state.creditCards = seedCreditCards(state.accounts);
   state.notifications = [];
   state.auditLogs = [];
   state.filters = {};
@@ -1384,6 +1764,8 @@ function clearDemoData() {
     transactions: 0,
     events: 0,
     vendors: 0,
+    accounts: state.accounts.length,
+    creditCards: state.creditCards.length,
   });
   persist();
   renderShell();
@@ -1428,6 +1810,42 @@ function markTransactionPaid(id) {
   persist();
   renderView();
   showToast("Lançamento marcado como pago.");
+}
+
+function markTransactionReconciled(id, reconciled) {
+  if (!canWriteFinance()) return showToast("Perfil sem permissão para conciliar.");
+  const item = state.transactions.find((entry) => entry.id === id);
+  if (!item) return;
+  const before = structuredClone(item);
+  item.reconciled = reconciled;
+  item.reconciledAt = reconciled ? new Date().toISOString() : "";
+  item.statementDate = reconciled ? (item.paidAt || item.date || todayISO()) : "";
+  item.updatedAt = new Date().toISOString();
+  recordAudit("UPDATE", "Reconciliation", id, before, item);
+  persist();
+  renderView();
+  showToast(reconciled ? "Lançamento conciliado." : "Conciliação desfeita.");
+}
+
+function reconcileVisibleTransactions() {
+  if (!canWriteFinance()) return showToast("Perfil sem permissão para conciliar.");
+  const transactions = getFilteredReconciliationTransactions().filter((item) => !item.reconciled);
+  if (!transactions.length) {
+    showToast("Não há pendências visíveis para conciliar.");
+    return;
+  }
+
+  transactions.forEach((item) => {
+    item.reconciled = true;
+    item.reconciledAt = new Date().toISOString();
+    item.statementDate = item.paidAt || item.date || todayISO();
+    item.updatedAt = new Date().toISOString();
+  });
+
+  recordAudit("UPDATE", "ReconciliationBatch", "visible", { count: transactions.length }, { count: transactions.length, reconciled: true });
+  persist();
+  renderView();
+  showToast(`${transactions.length} lançamento(s) conciliado(s).`);
 }
 
 function registerAgreement(id) {
@@ -1543,10 +1961,11 @@ function getKpis() {
   const expense = sum(paid.filter((item) => item.type === "DESPESA").map((item) => item.amount));
   const studentFinancials = state.students.map(getStudentFinancials);
   const overdue = sum(studentFinancials.map((item) => item.overdue));
+  const wallet = getWalletSummary();
   return {
     revenue,
     expense,
-    balance: revenue - expense,
+    balance: wallet.ledgerBalance,
     incomeCount: paid.filter((item) => item.type === "RECEITA" || item.type === "REEMBOLSO").length,
     expenseCount: paid.filter((item) => item.type === "DESPESA").length,
     overdue,
@@ -1554,6 +1973,57 @@ function getKpis() {
     overdueFees: overdue * (state.settings.fineRate / 100) + overdue * (state.settings.monthlyInterestRate / 100),
     goalProgress: revenue / Math.max(state.settings.fundraisingGoal, 1) * 100,
   };
+}
+
+function getWalletSummary() {
+  const ledgerBalance = sum(state.accounts.map((item) => accountLedgerBalance(item.id)));
+  const reconciledBalance = sum(state.accounts.map((item) => accountReconciledBalance(item.id)));
+  const statementBalance = sum(state.accounts.map((item) => Number(item.statementBalance || 0)));
+  const cardOpenTotal = sum(state.creditCards.map((item) => cardInvoiceTotal(item.id)));
+  return {
+    ledgerBalance,
+    reconciledBalance,
+    statementBalance,
+    cardOpenTotal,
+    statementDifference: ledgerBalance - statementBalance,
+  };
+}
+
+function accountLedgerBalance(accountId) {
+  const account = state.accounts.find((item) => item.id === accountId);
+  return Number(account?.initialBalance || 0) + sum(state.transactions.map((item) => accountMovement(item, accountId, false)));
+}
+
+function accountReconciledBalance(accountId) {
+  const account = state.accounts.find((item) => item.id === accountId);
+  return Number(account?.initialBalance || 0) + sum(state.transactions.map((item) => accountMovement(item, accountId, true)));
+}
+
+function accountMovement(item, accountId, onlyReconciled) {
+  if (item.status !== "PAGO") return 0;
+  if (item.paymentMethod === "CARTAO_CREDITO") return 0;
+  if (onlyReconciled && !item.reconciled) return 0;
+
+  if (item.type === "TRANSFERENCIA") {
+    if (item.accountId === accountId) return -Number(item.amount || 0);
+    if (item.transferToAccountId === accountId) return Number(item.amount || 0);
+    return 0;
+  }
+
+  if (item.accountId !== accountId) return 0;
+  return transactionFlow(item);
+}
+
+function transactionFlow(item) {
+  if (["RECEITA", "REEMBOLSO", "ESTORNO", "AJUSTE"].includes(item.type)) return Number(item.amount || 0);
+  if (item.type === "DESPESA") return -Number(item.amount || 0);
+  return 0;
+}
+
+function cardInvoiceTotal(cardId) {
+  return sum(state.transactions
+    .filter((item) => item.cardId === cardId && item.type === "DESPESA" && item.status !== "ESTORNADO")
+    .map((item) => item.amount));
 }
 
 function monthlySeries(count, options = {}) {
@@ -1596,11 +2066,25 @@ function getFilteredTransactions() {
   const search = normalize(getFilter("financeSearch"));
   const status = getFilter("financeStatus", "TODOS");
   const center = getFilter("financeCostCenter", "TODOS");
+  const wallet = getFilter("financeWallet", "TODOS");
   return state.transactions
     .filter((item) => !search || normalize(`${item.description} ${item.category} ${item.subcategory} ${item.group}`).includes(search))
     .filter((item) => status === "TODOS" || item.status === status)
     .filter((item) => center === "TODOS" || item.costCenterId === center)
+    .filter((item) => wallet === "TODOS" || transactionMatchesWallet(item, wallet))
     .sort((a, b) => b.date.localeCompare(a.date));
+}
+
+function getFilteredReconciliationTransactions() {
+  const account = getFilter("reconcileAccount", "TODOS");
+  const status = getFilter("reconcileStatus", "PENDENTE");
+  return state.transactions
+    .filter((item) => item.status === "PAGO")
+    .filter((item) => item.paymentMethod !== "CARTAO_CREDITO")
+    .filter((item) => item.accountId)
+    .filter((item) => account === "TODOS" || item.accountId === account || item.transferToAccountId === account)
+    .filter((item) => status === "TODOS" || (status === "CONCILIADO" ? item.reconciled : !item.reconciled))
+    .sort((a, b) => (b.paidAt || b.date).localeCompare(a.paidAt || a.date));
 }
 
 function getFilteredStudents() {
@@ -1707,16 +2191,18 @@ function getNotifications() {
 function transactionsTable(transactions, options = {}) {
   if (!transactions.length) return emptyState("Nenhum lançamento encontrado.");
   return `
-    <div class="data-table" style="--cols: minmax(180px, 1.4fr) 116px 130px 120px 150px ${options.actions ? "100px" : ""};">
+    <div class="data-table" style="--cols: minmax(180px, 1.4fr) 108px 130px 130px 118px 118px 140px ${options.actions ? "100px" : ""};">
       <div class="table-row header">
-        <div>Descrição</div><div>Tipo</div><div>Categoria</div><div>Status</div><div>Valor</div>${options.actions ? "<div>Ações</div>" : ""}
+        <div>Descrição</div><div>Tipo</div><div>Categoria</div><div>Conta/cartão</div><div>Status</div><div>Conciliação</div><div>Valor</div>${options.actions ? "<div>Ações</div>" : ""}
       </div>
       ${transactions.map((item) => `
         <div class="table-row">
           <div class="table-cell"><strong>${escapeHtml(item.description)}</strong><span class="subtle">${formatDate(item.date)} • ${escapeHtml(costCenterName(item.costCenterId))}</span></div>
           <div class="table-cell"><span class="badge ${item.type === "DESPESA" ? "danger" : "success"}">${typeLabel(item.type)}</span></div>
           <div class="table-cell">${escapeHtml(item.category)}<span class="subtle">${escapeHtml(item.subcategory || "")}</span></div>
+          <div class="table-cell">${escapeHtml(transactionWalletLabel(item))}<span class="subtle">${paymentMethodLabel(item.paymentMethod)}</span></div>
           <div class="table-cell"><span class="badge ${statusBadge(item.status)}">${statusLabel(item.status)}</span></div>
+          <div class="table-cell"><span class="badge ${item.paymentMethod === "CARTAO_CREDITO" ? "info" : item.reconciled ? "success" : "warning"}">${item.paymentMethod === "CARTAO_CREDITO" ? "Fatura" : item.reconciled ? "Conciliado" : "Pendente"}</span></div>
           <div class="table-cell amount ${item.type === "DESPESA" ? "expense" : "income"}">${money(item.amount)}</div>
           ${options.actions ? `
             <div class="row-actions">
@@ -2096,7 +2582,7 @@ function loadState() {
   if (saved) {
     try {
       const parsed = JSON.parse(saved);
-      if (parsed.schema === "medcom-erp") return parsed;
+      if (parsed.schema === "medcom-erp") return normalizeState(parsed);
     } catch {
       localStorage.removeItem(STORAGE_KEY);
     }
@@ -2116,6 +2602,83 @@ function loadSession() {
 
 function persist() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  saveStateToCloudDebounced();
+}
+
+async function hydrateStateFromCloud() {
+  const config = window.MEDCOM_SUPABASE;
+  const canConnect = config?.url && config?.anonKey && window.supabase?.createClient;
+  if (!canConnect) {
+    cloudStatus = CLOUD_STATUS.local;
+    return;
+  }
+
+  cloudStateId = config.stateId || "medcom34";
+  cloudClient = window.supabase.createClient(config.url, config.anonKey);
+
+  try {
+    const { data, error } = await cloudClient
+      .from("app_state")
+      .select("data")
+      .eq("id", cloudStateId)
+      .maybeSingle();
+
+    if (error) throw error;
+
+    if (data?.data?.schema === "medcom-erp" && isCloudStateUsable(data.data)) {
+      state = normalizeState(data.data);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } else {
+      state = createCleanState();
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      await saveStateToCloudNow();
+    }
+
+    cloudStatus = CLOUD_STATUS.connected;
+  } catch (error) {
+    console.warn("Supabase indisponível:", error);
+    cloudStatus = CLOUD_STATUS.error;
+  }
+}
+
+function isCloudStateUsable(data) {
+  return Array.isArray(data.users) && data.users.length > 0 && Array.isArray(data.categories) && data.categories.length > 0;
+}
+
+function saveStateToCloudDebounced() {
+  if (!cloudClient) return;
+  cloudStatus = CLOUD_STATUS.saving;
+  if (elements.cloudStatus) {
+    elements.cloudStatus.textContent = cloudStatus;
+    elements.cloudStatus.className = "badge info";
+  }
+  clearTimeout(cloudSaveTimer);
+  cloudSaveTimer = setTimeout(saveStateToCloudNow, 900);
+}
+
+async function saveStateToCloudNow() {
+  if (!cloudClient) return;
+
+  try {
+    const { error } = await cloudClient
+      .from("app_state")
+      .upsert({
+        id: cloudStateId,
+        data: state,
+        updated_at: new Date().toISOString(),
+      });
+
+    if (error) throw error;
+    cloudStatus = CLOUD_STATUS.connected;
+  } catch (error) {
+    console.warn("Erro ao salvar no Supabase:", error);
+    cloudStatus = CLOUD_STATUS.error;
+  }
+
+  if (elements.cloudStatus) {
+    elements.cloudStatus.textContent = cloudStatus;
+    elements.cloudStatus.className = `badge ${cloudStatus === CLOUD_STATUS.error ? "danger" : "info"}`;
+  }
 }
 
 function recordAudit(action, entity, recordId, before, after, options = {}) {
@@ -2155,16 +2718,70 @@ function diffSummary(log) {
   return changes.length ? changes.slice(0, 4).join(", ") : "Sem alteração material";
 }
 
-function createSeedState() {
-  const users = [
-    user("usr-admin", "Ana Beatriz Rocha", "admin@medcom.local", "ADMIN"),
-    user("usr-president", "Luísa Mendonça", "presidencia@medcom.local", "PRESIDENT"),
-    user("usr-treasurer", "Rafael Nogueira", "tesouraria@medcom.local", "TREASURER"),
-    user("usr-fiscal", "Marina Duarte", "fiscal@medcom.local", "FISCAL"),
-    user("usr-student", "Camila Torres", "aluna@medcom.local", "STUDENT"),
-    user("usr-auditor", "Eduardo Salles", "auditoria@medcom.local", "AUDITOR"),
+function normalizeState(parsed) {
+  const accounts = Array.isArray(parsed.accounts) && parsed.accounts.length ? parsed.accounts : seedAccounts();
+  const creditCards = Array.isArray(parsed.creditCards) && parsed.creditCards.length ? parsed.creditCards : seedCreditCards(accounts);
+  const defaultAccount = accounts.find((item) => item.type === "BANCO") || accounts[0];
+  const cashAccount = accounts.find((item) => item.type === "DINHEIRO") || defaultAccount;
+  const defaultCard = creditCards[0];
+
+  const transactions = Array.isArray(parsed.transactions) ? parsed.transactions.map((item, index) => {
+    const inferredCard = item.type === "DESPESA" && index % 7 === 0 && defaultCard;
+    const paymentMethod = item.paymentMethod || (inferredCard ? "CARTAO_CREDITO" : item.type === "DINHEIRO" ? "DINHEIRO" : "CONTA");
+    const accountId = item.accountId || (paymentMethod === "DINHEIRO" ? cashAccount?.id : defaultAccount?.id) || "";
+    return {
+      ...item,
+      paymentMethod,
+      accountId: paymentMethod === "CARTAO_CREDITO" ? "" : accountId,
+      transferToAccountId: item.transferToAccountId || "",
+      cardId: item.cardId || (paymentMethod === "CARTAO_CREDITO" ? defaultCard?.id || "" : ""),
+      documentNumber: item.documentNumber || "",
+      statementMemo: item.statementMemo || item.notes || "",
+      reconciled: typeof item.reconciled === "boolean" ? item.reconciled : item.status === "PAGO" && paymentMethod !== "CARTAO_CREDITO" && index % 4 !== 0,
+      reconciledAt: item.reconciledAt || "",
+      statementDate: item.statementDate || item.paidAt || item.date || "",
+    };
+  }) : [];
+
+  return {
+    ...parsed,
+    version: 2,
+    settings: {
+      theme: "light",
+      fundraisingGoal: 1250000,
+      fineRate: 2,
+      monthlyInterestRate: 1,
+      committeeName: "Comissão de Formatura Medicina 2026",
+      ...parsed.settings,
+    },
+    accounts,
+    creditCards,
+    users: Array.isArray(parsed.users) && parsed.users.length ? parsed.users : createDefaultUsers(),
+    categories: Array.isArray(parsed.categories) && parsed.categories.length ? parsed.categories : seedCategories(),
+    costCenters: Array.isArray(parsed.costCenters) && parsed.costCenters.length ? parsed.costCenters : seedCostCenters(),
+    students: Array.isArray(parsed.students) ? parsed.students : [],
+    events: Array.isArray(parsed.events) ? parsed.events : [],
+    vendors: Array.isArray(parsed.vendors) ? parsed.vendors : [],
+    transactions,
+    notifications: Array.isArray(parsed.notifications) ? parsed.notifications : [],
+    auditLogs: Array.isArray(parsed.auditLogs) ? parsed.auditLogs : [],
+    filters: parsed.filters || {},
+  };
+}
+
+function createDefaultUsers() {
+  return [
+    user("usr-admin", "Administradora", "fermoreti.med@gmail.com", "ADMIN"),
+    user("usr-president", "Presidência da Comissão", "presidencia@medcom.local", "PRESIDENT"),
+    user("usr-treasurer", "Tesouraria", "tesouraria@medcom.local", "TREASURER"),
+    user("usr-fiscal", "Conselho Fiscal", "fiscal@medcom.local", "FISCAL"),
+    user("usr-student", "Formando", "aluna@medcom.local", "STUDENT"),
+    user("usr-auditor", "Auditoria", "auditoria@medcom.local", "AUDITOR"),
   ];
-  const costCenters = [
+}
+
+function seedCostCenters() {
+  return [
     costCenter("cc-baile", "Baile", "Diretoria de Eventos", 780000),
     costCenter("cc-colacao", "Colação", "Presidência", 160000),
     costCenter("cc-saudade", "Aula da Saudade", "Diretoria Acadêmica", 42000),
@@ -2174,14 +2791,69 @@ function createSeedState() {
     costCenter("cc-produtos", "Produtos", "Comercial", 68000),
     costCenter("cc-comissao", "Comissão", "Diretoria Executiva", 84000),
   ];
+}
+
+function createCleanState() {
+  const users = createDefaultUsers();
+  const accounts = seedAccounts();
+  return {
+    schema: "medcom-erp",
+    version: 2,
+    settings: {
+      theme: "light",
+      fundraisingGoal: 1250000,
+      fineRate: 2,
+      monthlyInterestRate: 1,
+      committeeName: "Comissão de Formatura Medicina",
+    },
+    users,
+    costCenters: seedCostCenters(),
+    categories: seedCategories(),
+    accounts,
+    creditCards: seedCreditCards(accounts),
+    students: [],
+    events: [],
+    vendors: [],
+    transactions: [],
+    notifications: [],
+    auditLogs: [
+      {
+        id: uid("log"),
+        timestamp: new Date().toISOString(),
+        action: "CREATE",
+        entity: "CloudState",
+        recordId: "medcom34",
+        userId: users[0].id,
+        userName: users[0].name,
+        role: users[0].role,
+        before: null,
+        after: { status: "Estado limpo inicializado na nuvem" },
+      },
+    ],
+    filters: {},
+  };
+}
+
+function createSeedState() {
+  const users = [
+    user("usr-admin", "Ana Beatriz Rocha", "admin@medcom.local", "ADMIN"),
+    user("usr-president", "Luísa Mendonça", "presidencia@medcom.local", "PRESIDENT"),
+    user("usr-treasurer", "Rafael Nogueira", "tesouraria@medcom.local", "TREASURER"),
+    user("usr-fiscal", "Marina Duarte", "fiscal@medcom.local", "FISCAL"),
+    user("usr-student", "Camila Torres", "aluna@medcom.local", "STUDENT"),
+    user("usr-auditor", "Eduardo Salles", "auditoria@medcom.local", "AUDITOR"),
+  ];
+  const costCenters = seedCostCenters();
   const categories = seedCategories();
   const students = generateStudents(72);
   const events = seedEvents();
   const vendors = seedVendors(events);
-  const transactions = seedTransactions(students, categories, costCenters, events, vendors);
+  const accounts = seedAccounts();
+  const creditCards = seedCreditCards(accounts);
+  const transactions = seedTransactions(students, categories, costCenters, events, vendors, accounts, creditCards);
   return {
     schema: "medcom-erp",
-    version: 1,
+    version: 2,
     settings: {
       theme: "light",
       fundraisingGoal: 1250000,
@@ -2192,6 +2864,8 @@ function createSeedState() {
     users,
     costCenters,
     categories,
+    accounts,
+    creditCards,
     students,
     events,
     vendors,
@@ -2210,6 +2884,49 @@ function user(id, name, email, role) {
 
 function costCenter(id, name, owner, budget) {
   return { id, name, owner, budget, active: true };
+}
+
+function seedAccounts() {
+  return [
+    account("acc-principal", "Conta corrente principal", "BANCO", "Banco do Brasil", 0, 294850, "2026-05-18"),
+    account("acc-aplicacao", "Aplicação reserva", "APLICACAO", "CDB liquidez diária", 180000, 183120, "2026-05-18"),
+    account("acc-caixa", "Caixa em dinheiro", "DINHEIRO", "Tesouraria física", 2500, 2500, "2026-05-18"),
+  ];
+}
+
+function account(id, name, type, institution, initialBalance, statementBalance, statementDate) {
+  return {
+    id,
+    name,
+    type,
+    institution,
+    initialBalance,
+    statementBalance,
+    statementDate,
+    active: true,
+    createdAt: "2026-05-18T12:00:00.000Z",
+  };
+}
+
+function seedCreditCards(accounts) {
+  return [
+    creditCard("card-corporativo", "Cartão corporativo comissão", "Visa", 48000, 5, 15, accounts[0]?.id || ""),
+    creditCard("card-eventos", "Cartão eventos e fornecedores", "Mastercard", 95000, 10, 20, accounts[0]?.id || ""),
+  ];
+}
+
+function creditCard(id, name, brand, limit, closingDay, dueDay, accountId) {
+  return {
+    id,
+    name,
+    brand,
+    limit,
+    closingDay,
+    dueDay,
+    accountId,
+    active: true,
+    createdAt: "2026-05-18T12:00:00.000Z",
+  };
 }
 
 function seedCategories() {
@@ -2329,8 +3046,13 @@ function vendor(id, name, cnpj, contact, eventId, title, totalValue, nextDueDate
   };
 }
 
-function seedTransactions(students, categories, costCenters, events, vendors) {
+function seedTransactions(students, categories, costCenters, events, vendors, accounts = seedAccounts(), creditCards = seedCreditCards(accounts)) {
   const byId = Object.fromEntries(categories.map((item) => [item.id, item]));
+  const mainAccount = accounts.find((item) => item.id === "acc-principal") || accounts[0];
+  const cashAccount = accounts.find((item) => item.id === "acc-caixa") || mainAccount;
+  const reserveAccount = accounts.find((item) => item.id === "acc-aplicacao") || mainAccount;
+  const corporateCard = creditCards.find((item) => item.id === "card-corporativo") || creditCards[0];
+  const eventsCard = creditCards.find((item) => item.id === "card-eventos") || corporateCard;
   const transactions = [];
   students.forEach((student) => {
     student.payments.filter((payment) => payment.status === "PAGO").forEach((payment) => {
@@ -2344,6 +3066,10 @@ function seedTransactions(students, categories, costCenters, events, vendors) {
         costCenterId: "cc-comissao",
         status: "PAGO",
         studentId: student.id,
+        accountId: mainAccount?.id,
+        paymentMethod: "CONTA",
+        reconciled: Number(student.id.replace(/\D/g, "").slice(-2)) % 3 !== 0,
+        documentNumber: payment.id,
       }));
     });
   });
@@ -2354,7 +3080,19 @@ function seedTransactions(students, categories, costCenters, events, vendors) {
     ["Venda de camisetas", 12300, "2026-05-12", "cat-produtos", "cc-produtos"],
     ["Rendimento aplicação CDB", 3120, "2026-05-15", "cat-rendimento", "cc-comissao"],
   ].forEach(([description, amount, date, categoryId, center]) => {
-    transactions.push(transaction({ type: byId[categoryId].type, description, amount, date, dueDate: date, category: byId[categoryId], costCenterId: center, status: "PAGO" }));
+    transactions.push(transaction({
+      type: byId[categoryId].type,
+      description,
+      amount,
+      date,
+      dueDate: date,
+      category: byId[categoryId],
+      costCenterId: center,
+      status: "PAGO",
+      accountId: categoryId === "cat-rendimento" ? reserveAccount?.id : mainAccount?.id,
+      paymentMethod: "CONTA",
+      reconciled: true,
+    }));
   });
   [
     ["Entrada Buffet Imperial LTDA", 52000, "2026-04-02", "2026-04-02", "cat-buffet", "cc-baile", "evt-baile", "ven-buffet", "PAGO"],
@@ -2367,7 +3105,23 @@ function seedTransactions(students, categories, costCenters, events, vendors) {
     ["Cerimonial colação parcela", 18800, "2026-06-18", "2026-06-18", "cat-colacao", "cc-colacao", "evt-colacao", "ven-cerimonial", "AGENDADO"],
     ["Cobertura foto e vídeo entrada", 14800, "2026-05-14", "2026-05-14", "cat-foto", "cc-colacao", "evt-colacao", "ven-foto", "PAGO"],
   ].forEach(([description, amount, date, dueDate, categoryId, center, eventId, vendorId, status]) => {
-    transactions.push(transaction({ type: "DESPESA", description, amount, date, dueDate, category: byId[categoryId], costCenterId: center, eventId, vendorId, status }));
+    const useCard = ["cat-marketing", "cat-tecnologia", "cat-foto"].includes(categoryId);
+    transactions.push(transaction({
+      type: "DESPESA",
+      description,
+      amount,
+      date,
+      dueDate,
+      category: byId[categoryId],
+      costCenterId: center,
+      eventId,
+      vendorId,
+      status,
+      accountId: useCard ? "" : categoryId === "cat-juridico" ? cashAccount?.id : mainAccount?.id,
+      cardId: useCard ? (categoryId === "cat-foto" ? eventsCard?.id : corporateCard?.id) : "",
+      paymentMethod: useCard ? "CARTAO_CREDITO" : categoryId === "cat-juridico" ? "DINHEIRO" : "CONTA",
+      reconciled: status === "PAGO" && !useCard && categoryId !== "cat-juridico",
+    }));
   });
   return transactions.sort((a, b) => b.date.localeCompare(a.date));
 }
@@ -2390,6 +3144,15 @@ function transaction(input) {
     eventId: input.eventId || "",
     vendorId: input.vendorId || "",
     studentId: input.studentId || "",
+    paymentMethod: input.paymentMethod || "CONTA",
+    accountId: input.accountId || "acc-principal",
+    transferToAccountId: input.transferToAccountId || "",
+    cardId: input.cardId || "",
+    documentNumber: input.documentNumber || "",
+    statementMemo: input.statementMemo || "",
+    reconciled: Boolean(input.reconciled),
+    reconciledAt: input.reconciled ? "2026-05-18T12:00:00.000Z" : "",
+    statementDate: input.paidAt || input.date,
     notes: "",
     createdBy: "usr-treasurer",
     createdAt: "2026-05-18T12:00:00.000Z",
@@ -2426,11 +3189,15 @@ function categorizeText(text, type) {
 }
 
 function exportFinanceCsv() {
-  const rows = [["tipo", "data", "vencimento", "status", "categoria", "subcategoria", "centro_custo", "descricao", "valor"], ...getFilteredTransactions().map((item) => [
+  const rows = [["tipo", "data", "vencimento", "status", "conciliado", "conta_cartao", "metodo", "documento", "categoria", "subcategoria", "centro_custo", "descricao", "valor"], ...getFilteredTransactions().map((item) => [
     typeLabel(item.type),
     item.date,
     item.dueDate,
     statusLabel(item.status),
+    item.reconciled ? "sim" : "nao",
+    transactionWalletLabel(item),
+    paymentMethodLabel(item.paymentMethod),
+    item.documentNumber || "",
     item.category,
     item.subcategory,
     costCenterName(item.costCenterId),
@@ -2505,6 +3272,23 @@ function statusLabel(status) {
   return { PAGO: "Pago", AGENDADO: "Agendado", PENDENTE: "Pendente" }[status] || status;
 }
 
+function paymentMethodLabel(method) {
+  return {
+    CONTA: "Conta",
+    DINHEIRO: "Dinheiro",
+    APLICACAO: "Aplicação",
+    CARTAO_CREDITO: "Cartão",
+  }[method] || method || "Conta";
+}
+
+function accountTypeLabel(type) {
+  return {
+    BANCO: "Banco",
+    DINHEIRO: "Dinheiro",
+    APLICACAO: "Aplicação",
+  }[type] || type || "Conta";
+}
+
 function eventStatusLabel(status) {
   return { PLANEJAMENTO: "Planejamento", EM_EXECUCAO: "Em execução", CONCLUIDO: "Concluído" }[status] || status;
 }
@@ -2523,6 +3307,36 @@ function severityClass(severity) {
 
 function costCenterName(id) {
   return state.costCenters.find((item) => item.id === id)?.name || "Sem centro";
+}
+
+function accountName(id) {
+  return state.accounts.find((item) => item.id === id)?.name || "Sem conta";
+}
+
+function cardName(id) {
+  return state.creditCards.find((item) => item.id === id)?.name || "Sem cartão";
+}
+
+function accountPaymentMethod(accountId) {
+  const account = state.accounts.find((item) => item.id === accountId);
+  if (account?.type === "DINHEIRO") return "DINHEIRO";
+  if (account?.type === "APLICACAO") return "APLICACAO";
+  return "CONTA";
+}
+
+function transactionWalletLabel(item) {
+  if (item.paymentMethod === "CARTAO_CREDITO") return cardName(item.cardId);
+  if (item.type === "TRANSFERENCIA" && item.transferToAccountId) {
+    return `${accountName(item.accountId)} → ${accountName(item.transferToAccountId)}`;
+  }
+  return accountName(item.accountId);
+}
+
+function transactionMatchesWallet(item, wallet) {
+  const [kind, id] = String(wallet).split(":");
+  if (kind === "account") return item.accountId === id || item.transferToAccountId === id;
+  if (kind === "card") return item.cardId === id;
+  return true;
 }
 
 function eventRealized(eventId) {
@@ -2617,6 +3431,10 @@ function sum(values) {
   return values.reduce((total, value) => total + Number(value || 0), 0);
 }
 
+function clampDay(value) {
+  return Math.max(1, Math.min(31, Number(value) || 1));
+}
+
 function range(count) {
   return Array.from({ length: count }, (_, index) => index);
 }
@@ -2692,6 +3510,7 @@ function iconSvg(name) {
     settings: '<svg viewBox="0 0 24 24"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2 3.4-.1-.1a1.7 1.7 0 0 0-2-.3 1.7 1.7 0 0 0-1 1.5V22h-4v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-2 .3l-.1.1-2-3.4.1-.1A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.4-1H3v-4h.2a1.7 1.7 0 0 0 1.4-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1 2-3.4.1.1a1.7 1.7 0 0 0 2 .3 1.7 1.7 0 0 0 1-1.5V2h4v.2a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 2-.3l.1-.1 2 3.4-.1.1A1.7 1.7 0 0 0 19.4 9c.3.6.8 1 1.4 1h.2v4h-.2a1.7 1.7 0 0 0-1.4 1Z"/></svg>',
     user: '<svg viewBox="0 0 24 24"><path d="M20 21a8 8 0 1 0-16 0"/><circle cx="12" cy="7" r="4"/></svg>',
     check: '<svg viewBox="0 0 24 24"><path d="m20 6-11 11-5-5"/></svg>',
+    undo: '<svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 1 1 0 12h-3"/></svg>',
     trash: '<svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>',
     handshake: '<svg viewBox="0 0 24 24"><path d="m11 17 2 2a3 3 0 0 0 4 0l3-3"/><path d="m14 14 2 2"/><path d="M3 8l4-4 5 5-4 4Z"/><path d="m7 12 5 5"/><path d="m14 5 7 7-3 3"/></svg>',
   };

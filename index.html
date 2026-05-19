@@ -16,7 +16,7 @@
     <link rel="manifest" href="manifest.webmanifest" />
     <link rel="icon" href="app-icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="apple-touch-icon.png" />
-    <link rel="stylesheet" href="styles.css?v=3" />
+    <link rel="stylesheet" href="styles.css?v=6" />
   </head>
   <body>
     <section class="login-screen" id="loginScreen">
@@ -107,6 +107,7 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7M10 21h4" /></svg>
               <span id="notificationCount">0</span>
             </button>
+            <span class="badge info" id="cloudStatus">Modo local</span>
             <button class="button button-secondary" id="logoutButton" type="button">Sair</button>
           </div>
         </header>
@@ -131,6 +132,8 @@
     <div class="modal-backdrop is-hidden" id="modalRoot"></div>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-    <script src="app.js?v=3"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="supabase-config.js?v=6"></script>
+    <script src="app.js?v=6"></script>
   </body>
 </html>
